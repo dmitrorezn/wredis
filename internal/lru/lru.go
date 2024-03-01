@@ -274,7 +274,7 @@ func (l *lru[K, V]) del(key K, el *list.Element) {
 func (l *lru[K, V]) Resize(size int) int {
 	diff := l.Len() - size
 	if diff < 0 {
-		return 0
+		diff = 0
 	}
 	for i := 0; i < diff; i++ {
 		l.removeOldest()
