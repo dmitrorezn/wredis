@@ -2,6 +2,7 @@ package wredis
 
 import (
 	"context"
+	"github.com/dmitrorezn/wredis/pkg/logger"
 	"sync/atomic"
 	"time"
 
@@ -12,12 +13,12 @@ import (
 type SingleFlightClient struct {
 	group *singleflight.Group
 	UniversalClient
-	logger Logger
+	logger logger.Logger
 
 	sharedInMinuteCount atomic.Int64
 }
 
-func WithLogger(logger Logger) func(client *SingleFlightClient) {
+func WithLogger(logger logger.Logger) func(client *SingleFlightClient) {
 	return func(client *SingleFlightClient) {
 		client.logger = logger
 	}
@@ -34,7 +35,7 @@ func NewSingleFlight(
 	sfc := &SingleFlightClient{
 		group:           new(singleflight.Group),
 		UniversalClient: client,
-		logger:          NewStdLogger(),
+		logger:          logger.NewStdLogger(),
 	}
 	for _, c := range conf {
 		c(sfc)
@@ -53,76 +54,86 @@ func (s *SingleFlightClient) logAndPurgeMetric() {
 	s.logger.Info("METRIC", "shared_keys_count", s.sharedInMinuteCount.Swap(0))
 }
 
-func (s *SingleFlightClient) do(ctx context.Context, key string, fn func() (interface{}, error)) (interface{}, error) {
+type cmd[T any] func(client UniversalClient) T
+
+func newGroup[T any](
+	g *singleflight.Group,
+	client UniversalClient,
+	onShare func(key string),
+) *group[T] {
+	return &group[T]{
+		group:   g,
+		client:  client,
+		onShare: onShare,
+	}
+}
+
+type group[T any] struct {
+	group   *singleflight.Group
+	client  UniversalClient
+	onShare func(key string)
+}
+
+func (g *group[T]) Do(key string, cmd cmd[T]) (T, bool) {
+	val, _, shared := g.group.Do(key, func() (interface{}, error) {
+		return cmd(g.client), nil
+	})
+	if shared && g.onShare != nil {
+		g.onShare(key)
+	}
+
+	return val.(T), shared
+}
+
+func (g *SingleFlightClient) prepareStringCmd() *group[*redis.StringCmd] {
+	return newGroup[*redis.StringCmd](g.group, g.UniversalClient, func(key string) {
+		g.sharedInMinuteCount.Add(1)
+	})
+}
+
+func (g *SingleFlightClient) prepareSliceCmd() *group[*redis.SliceCmd] {
+	return newGroup[*redis.SliceCmd](g.group, g.UniversalClient, func(key string) {
+		g.sharedInMinuteCount.Add(1)
+	})
+}
+
+func (s *SingleFlightClient) do(_ context.Context, key string, fn func() (interface{}, error)) (interface{}, error) {
 	result, err, shared := s.group.Do(key, fn)
 	if shared {
 		s.sharedInMinuteCount.Add(1)
-		// ...
 	}
 
 	return result, err
 }
 
 func (s *SingleFlightClient) Get(ctx context.Context, key string) (cmd *redis.StringCmd) {
-	_, err := s.do(ctx, key, func() (interface{}, error) {
-		cmd = s.UniversalClient.Get(ctx, key)
-
-		return cmd, cmd.Err()
+	cmd, _ = s.prepareStringCmd().Do(key, func(client UniversalClient) *redis.StringCmd {
+		return client.Get(ctx, key)
 	})
-	if cmd == nil {
-		cmd = redis.NewStringCmd(ctx)
-	}
-	if err != nil {
-		cmd.SetErr(err)
-	}
 
 	return cmd
 }
 
 func (s *SingleFlightClient) HGet(ctx context.Context, key, field string) (cmd *redis.StringCmd) {
-	_, err := s.do(ctx, key+field, func() (interface{}, error) {
-		cmd = s.UniversalClient.HGet(ctx, key, field)
-
-		return cmd, cmd.Err()
+	cmd, _ = s.prepareStringCmd().Do(key+field, func(client UniversalClient) *redis.StringCmd {
+		return client.HGet(ctx, key, field)
 	})
-	if cmd == nil {
-		cmd = redis.NewStringCmd(ctx)
-	}
-	if err != nil {
-		cmd.SetErr(err)
-	}
 
 	return cmd
 }
 
 func (s *SingleFlightClient) GetDel(ctx context.Context, key string) (cmd *redis.StringCmd) {
-	_, err := s.do(ctx, key, func() (_ interface{}, err error) {
-		cmd = s.UniversalClient.GetDel(ctx, key)
-
-		return cmd, cmd.Err()
+	cmd, _ = s.prepareStringCmd().Do(key, func(client UniversalClient) *redis.StringCmd {
+		return client.GetDel(ctx, key)
 	})
-	if cmd == nil {
-		cmd = redis.NewStringCmd(ctx)
-	}
-	if err != nil {
-		cmd.SetErr(err)
-	}
 
 	return cmd
 }
 
 func (s *SingleFlightClient) HMGet(ctx context.Context, key string, field ...string) (cmd *redis.SliceCmd) {
-	_, err := s.do(ctx, key+fieldsToKey(field...), func() (interface{}, error) {
-		cmd = s.UniversalClient.HMGet(ctx, key, field...)
-
-		return cmd, cmd.Err()
+	cmd, _ = s.prepareSliceCmd().Do(key+fieldsToKey(field...), func(client UniversalClient) *redis.SliceCmd {
+		return client.HMGet(ctx, key, field...)
 	})
-	if cmd == nil {
-		cmd = redis.NewSliceCmd(ctx)
-	}
-	if err != nil {
-		cmd.SetErr(err)
-	}
 
 	return cmd
 }

@@ -185,12 +185,12 @@ func TestLRU_Resize(t *testing.T) {
 	// Upsize
 	evicted = l.Resize(2)
 	if evicted != 0 {
-		t.Errorf("0 elements should have been evicted: %v", evicted)
+		t.Errorf("0 items should have been evicted: %v", evicted)
 	}
 
 	l.Add(4, 4)
 	if !l.Contains(3) || !l.Contains(4) {
-		t.Errorf("Cache should have contained 2 elements")
+		t.Errorf("Cache should have contained 2 items")
 	}
 }
 

@@ -1,4 +1,4 @@
-package wredis
+package logger
 
 import (
 	"fmt"

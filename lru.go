@@ -2,6 +2,9 @@ package wredis
 
 import (
 	"context"
+	"github.com/dmitrorezn/wredis/pkg/logger"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
@@ -11,7 +14,7 @@ import (
 type LRUClient struct {
 	cfg LRUConfig
 	UniversalClient
-	logger Logger
+	logger logger.Logger
 	cache  *expirable.LRU[string, any]
 	quit   chan struct{}
 	work   chan string
@@ -35,7 +38,7 @@ type LRUConfig struct {
 	SubChannel         SubscriptionChannelConfig
 	OnAdd              callback[string, any]
 	OnEvict            callback[string, any]
-	logger             Logger
+	logger             logger.Logger
 }
 
 type SubscriptionChannelConfig struct {
@@ -53,7 +56,7 @@ func NewLRUConfig() LRUConfig {
 	return LRUConfig{
 		Size:   defaultLruSize,
 		TTL:    defaultLruTTL,
-		logger: NewStdLogger(),
+		logger: logger.NewStdLogger(),
 	}
 }
 
@@ -86,7 +89,7 @@ func (lc LRUConfig) WitOnEvict(c callback[string, any]) LRUConfig {
 
 	return lc
 }
-func (lc LRUConfig) WitLogger(logger Logger) LRUConfig {
+func (lc LRUConfig) WitLogger(logger logger.Logger) LRUConfig {
 	lc.logger = logger
 
 	return lc
@@ -264,4 +267,10 @@ func (c *LRUClient) getSliceCmd(key string) (cmd *redis.SliceCmd, ok bool) {
 	}
 
 	return cmd, true
+}
+
+func fieldsToKey(field ...string) string {
+	sort.Strings(field)
+
+	return strings.Join(field, "")
 }
