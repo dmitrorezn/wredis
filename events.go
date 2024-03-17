@@ -10,6 +10,10 @@ type (
 	Events []Event
 )
 
+func (e Events) Empty() bool {
+	return len(e) == 0
+}
+
 func (e Events) String() string {
 	events := make([]string, len(e))
 	for i, ev := range e {

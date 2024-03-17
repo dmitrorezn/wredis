@@ -6,11 +6,11 @@ import (
 )
 
 type Factory struct {
-	cfg        BuildConfig
+	cfg        FactoryConfig
 	decorators decorators
 }
 
-func NewFactory(cfg BuildConfig, ds ...decoratorID) *Factory {
+func NewFactory(cfg FactoryConfig, ds ...decoratorID) *Factory {
 	sort.Sort(decorators(ds))
 
 	return &Factory{
@@ -19,18 +19,26 @@ func NewFactory(cfg BuildConfig, ds ...decoratorID) *Factory {
 	}
 }
 
-type BuildConfig struct {
-	LRU LRUConfig
+type FactoryConfig struct {
+	LRU          LRUConfig
+	SingleFlight SingleFlightConfigs
 }
 
-func NewBuildConfig() BuildConfig {
-	return BuildConfig{
-		LRU: NewLRUConfig(),
+func NewBuildConfig() FactoryConfig {
+	return FactoryConfig{
+		LRU:          NewLRUConfig(),
+		SingleFlight: make(SingleFlightConfigs, 0),
 	}
 }
 
-func (bc BuildConfig) WithLRU(lru LRUConfig) BuildConfig {
+func (bc FactoryConfig) WithLRU(lru LRUConfig) FactoryConfig {
 	bc.LRU = lru
+
+	return bc
+}
+
+func (bc FactoryConfig) WithSingleFlight(opts ...Config[SingleFlightClient]) FactoryConfig {
+	bc.SingleFlight = opts
 
 	return bc
 }
@@ -39,13 +47,13 @@ func (f Factory) decorate(
 	ctx context.Context,
 	client UniversalClient,
 	id decoratorID,
-	cfg BuildConfig,
+	cfg FactoryConfig,
 ) UniversalClient {
 	switch id {
 	case LRU:
 		return NewWithLRU(ctx, client, cfg.LRU)
 	case SingleFlight:
-		return NewSingleFlight(client)
+		return NewSingleFlight(client, cfg.SingleFlight...)
 	}
 
 	return client
