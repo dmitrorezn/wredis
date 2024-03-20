@@ -47,40 +47,20 @@ func NewSingleFlight(
 	return sfc
 }
 
-type command[T any] func(client UniversalClient) T
-
-func newGroup[T any](
-	g *singleflight.Group,
-	client UniversalClient,
-) *group[T] {
-	return &group[T]{
-		group:  g,
-		client: client,
-	}
-}
-
-type group[T any] struct {
-	group  *singleflight.Group
-	client UniversalClient
-}
-
-func (g *group[T]) Do(key string, cmd command[T]) (T, error, bool) {
-	val, err, shared := g.group.Do(key, func() (interface{}, error) {
-		return cmd(g.client), nil
-	})
-	return val.(T), err, shared
-}
-
-func (g *SingleFlightClient) prepareStringCmd() *group[*redis.StringCmd] {
+func (g *SingleFlightClient) getSingleStringCmd() *group[*redis.StringCmd] {
 	return newGroup[*redis.StringCmd](g.group, g.UniversalClient)
 }
 
-func (g *SingleFlightClient) prepareSliceCmd() *group[*redis.SliceCmd] {
+func (g *SingleFlightClient) getSingleSliceCmd() *group[*redis.SliceCmd] {
 	return newGroup[*redis.SliceCmd](g.group, g.UniversalClient)
 }
 
+func (g *SingleFlightClient) getSingleMapStringStringCmd() *group[*redis.MapStringStringCmd] {
+	return newGroup[*redis.MapStringStringCmd](g.group, g.UniversalClient)
+}
+
 func (s *SingleFlightClient) Get(ctx context.Context, key string) *redis.StringCmd {
-	cmd, _, shared := s.prepareStringCmd().Do(key, func(client UniversalClient) *redis.StringCmd {
+	cmd, _, shared := s.getSingleStringCmd().Do(key, func(client UniversalClient) *redis.StringCmd {
 		return client.Get(ctx, key)
 	})
 	if shared {
@@ -91,7 +71,7 @@ func (s *SingleFlightClient) Get(ctx context.Context, key string) *redis.StringC
 }
 
 func (s *SingleFlightClient) HGet(ctx context.Context, key, field string) *redis.StringCmd {
-	cmd, _, shared := s.prepareStringCmd().Do(key+field, func(client UniversalClient) *redis.StringCmd {
+	cmd, _, shared := s.getSingleStringCmd().Do(key+field, func(client UniversalClient) *redis.StringCmd {
 		return client.HGet(ctx, key, field)
 	})
 	if shared {
@@ -102,7 +82,7 @@ func (s *SingleFlightClient) HGet(ctx context.Context, key, field string) *redis
 }
 
 func (s *SingleFlightClient) GetDel(ctx context.Context, key string) *redis.StringCmd {
-	cmd, _, shared := s.prepareStringCmd().Do(key, func(client UniversalClient) *redis.StringCmd {
+	cmd, _, shared := s.getSingleStringCmd().Do(key, func(client UniversalClient) *redis.StringCmd {
 		return client.GetDel(ctx, key)
 	})
 	if shared {
@@ -113,12 +93,19 @@ func (s *SingleFlightClient) GetDel(ctx context.Context, key string) *redis.Stri
 }
 
 func (s *SingleFlightClient) HMGet(ctx context.Context, key string, field ...string) *redis.SliceCmd {
-	cmd, _, shared := s.prepareSliceCmd().Do(key+fieldsToKey(field...), func(client UniversalClient) *redis.SliceCmd {
+	single := s.getSingleSliceCmd()
+	cmd, _, _ := single.Do(key+fieldsToKey(field...), func(client UniversalClient) *redis.SliceCmd {
 		return client.HMGet(ctx, key, field...)
 	})
-	if shared {
-		s.sharedInMinuteCount.Add(1)
-	}
+
+	return cmd
+}
+
+func (s *SingleFlightClient) HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd {
+	single := s.getSingleMapStringStringCmd()
+	cmd, _, _ := single.Do(key, func(client UniversalClient) *redis.MapStringStringCmd {
+		return client.HGetAll(ctx, key)
+	})
 
 	return cmd
 }

@@ -227,13 +227,12 @@ func (c *LRUClient) del(key string) {
 }
 
 func (c *LRUClient) Get(ctx context.Context, key string) (cmd *redis.StringCmd) {
-	ckey := key
-	cmd, ok := c.getStringCmd(ckey)
+	cmd, ok := c.getStringCmd(key)
 	if ok {
 		return cmd
 	}
-	cmd = c.UniversalClient.Get(ctx, ckey)
-	c.add(ckey, cmd)
+	cmd = c.UniversalClient.Get(ctx, key)
+	c.add(key, cmd)
 
 	return cmd
 }
@@ -252,25 +251,24 @@ func (c *LRUClient) GetDel(ctx context.Context, key string) *redis.StringCmd {
 }
 
 func (c *LRUClient) HGet(ctx context.Context, key, field string) *redis.StringCmd {
-	cacheKey := key + field
+	cacheKey := fieldsToKey(key, field)
 	cmd, ok := c.getStringCmd(cacheKey)
 	if ok {
 		return cmd
 	}
-
-	cmd = c.UniversalClient.HGet(ctx, cacheKey, field)
+	cmd = c.UniversalClient.HGet(ctx, key, field)
 	c.add(cacheKey, cmd)
 
 	return cmd
 }
 
 func (c *LRUClient) HMGet(ctx context.Context, key string, field ...string) *redis.SliceCmd {
-	cacheKey := fieldsToKey(field...)
+	cacheKey := key + fieldsToKey(field...)
 	cmd, ok := c.getSliceCmd(cacheKey)
 	if ok {
 		return cmd
 	}
-	cmd = c.UniversalClient.HMGet(ctx, cacheKey, field...)
+	cmd = c.UniversalClient.HMGet(ctx, key, field...)
 	c.add(key, cmd)
 
 	return cmd
@@ -278,8 +276,6 @@ func (c *LRUClient) HMGet(ctx context.Context, key string, field ...string) *red
 
 func (c *LRUClient) Close() error {
 	close(c.quit)
-
-	c.cache.Purge()
 
 	return c.UniversalClient.Close()
 }
@@ -292,13 +288,15 @@ func (c *LRUClient) add(key string, cmd IErrCmd) {
 	var ttl = c.cfg.TTL
 	if err := cmd.Err(); err != nil {
 		if !c.cfg.CacheErrors {
+			panic(1)
 			return
 		}
 		if c.cfg.ErrTTL > time.Nanosecond {
 			ttl = c.cfg.ErrTTL
 		}
 	}
-	if c.cache.Set(key, cmd, ttl) {
+	_ = ttl
+	if c.cache.Add(key, cmd) { // ttl) {
 		c.cfg.OnEvict.Call(key, cmd)
 	}
 	c.cfg.OnAdd.Call(key, cmd)
@@ -310,7 +308,7 @@ func (c *LRUClient) getStringCmd(key string) (*redis.StringCmd, bool) {
 		return nil, false
 	}
 	cmd, asserted := value.(*redis.StringCmd)
-	if !asserted || cmd == nil {
+	if !asserted {
 		return nil, false
 	}
 	c.cfg.OnGet.Call(key, value)
@@ -336,5 +334,5 @@ func (c *LRUClient) getSliceCmd(key string) (*redis.SliceCmd, bool) {
 func fieldsToKey(field ...string) string {
 	sort.Strings(field)
 
-	return strings.Join(field, "")
+	return strings.Join(field, ":")
 }
