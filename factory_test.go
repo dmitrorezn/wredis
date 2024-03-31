@@ -40,7 +40,7 @@ func (t *TestClientSuite) SetupTest() {
 
 	var (
 		cfg      = NewBuildConfig()
-		cacheCfg = NewCacheConfig().
+		cacheCfg = NewLocalCacheConfig().
 				WithTTL(time.Minute).
 				WithCacheErrors(true, 30*time.Second).
 				WithOnAdd(func(key string, _ any) {

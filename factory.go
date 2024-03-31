@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"time"
 )
 
 type Factory struct {
@@ -21,18 +22,18 @@ func NewFactory(cfg FactoryConfig, ds ...decoratorID) *Factory {
 }
 
 type FactoryConfig struct {
-	CacheConfig  CacheConfig
+	CacheConfig  LocalCacheConfig
 	SingleFlight SingleFlightConfigs
 }
 
 func NewBuildConfig() FactoryConfig {
 	return FactoryConfig{
-		CacheConfig:  NewCacheConfig(),
+		CacheConfig:  NewLocalCacheConfig(),
 		SingleFlight: make(SingleFlightConfigs, 0),
 	}
 }
 
-func (bc FactoryConfig) WithCacheConfig(cacheConfig CacheConfig) FactoryConfig {
+func (bc FactoryConfig) WithCacheConfig(cacheConfig LocalCacheConfig) FactoryConfig {
 	bc.CacheConfig = cacheConfig
 
 	return bc
@@ -57,7 +58,7 @@ func (f Factory) decorate(
 				cfg.CacheConfig.Size, cfg.CacheConfig.OnEvict, cfg.CacheConfig.TTL,
 			)
 
-			return NewWithCache(ctx, client, cache, cfg.CacheConfig)
+			return NewWithCache(ctx, client, NewTTLCache(cache, time.Second), cfg.CacheConfig)
 		}
 	case LFUDecorator:
 		{
@@ -65,7 +66,7 @@ func (f Factory) decorate(
 				cfg.CacheConfig.Size, cfg.CacheConfig.Samples, cfg.CacheConfig.OnEvict, cfg.CacheConfig.TTL,
 			)
 
-			return NewWithCache(ctx, client, cache, cfg.CacheConfig)
+			return NewWithCache(ctx, client, NewTTLCache(cache, time.Second), cfg.CacheConfig)
 		}
 	case SingleFlightDecorator:
 		{

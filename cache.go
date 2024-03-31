@@ -1,6 +1,7 @@
 package wredis
 
 import (
+	"math/rand"
 	"time"
 
 	"github.com/dmitrorezn/golang-lru/v2/expirable"
@@ -11,6 +12,40 @@ type Cache interface {
 	Get(key string) (any, bool)
 	Set(key string, v any, ttl ...time.Duration) bool
 	Del(key string)
+}
+
+type randOffset time.Duration
+
+var rnd *rand.Rand
+
+func init() {
+	rnd = rand.New(rand.NewSource(time.Now().UnixMicro()))
+}
+
+func (r randOffset) Get() time.Duration {
+	return time.Duration(rnd.Intn(int(r)))
+}
+
+type TTLCache struct {
+	ttlOffset randOffset
+	Cache
+}
+
+func NewTTLCache(cache Cache, ttlOffset time.Duration) *TTLCache {
+	return &TTLCache{
+		Cache:     cache,
+		ttlOffset: randOffset(ttlOffset),
+	}
+}
+
+var _ Cache = TTLCache{}
+
+func (c TTLCache) Set(key string, v any, ttl ...time.Duration) bool {
+	if len(ttl) > 0 && c.ttlOffset > 0 {
+		ttl[0] += c.ttlOffset.Get()
+	}
+
+	return c.Cache.Set(key, v, ttl...)
 }
 
 type LRUCache struct {

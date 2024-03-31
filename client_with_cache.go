@@ -14,7 +14,7 @@ import (
 )
 
 type CacheClient struct {
-	cfg CacheConfig
+	cfg LocalCacheConfig
 	UniversalClient
 	logger logger.Logger
 	cache  Cache
@@ -31,14 +31,16 @@ func (c callback[K, V]) Call(key K, value V) {
 	c(key, value)
 }
 
-type CacheConfig struct {
-	GroupName          string
-	Size               int           `env:"WREDIS_LRU_SIZE"`
-	Samples            int           `env:"WREDIS_LRU_SAMPLES"`
-	TTL                time.Duration `env:"WREDIS_LRU_TTL"`
-	CacheErrors        bool          `env:"WREDIS_LRU_CACHE_ERRS"`
-	ErrTTL             time.Duration `env:"WREDIS_LRU_ERR_TTL"`
-	InvalidationEvents Events        `env:"WREDIS_LRU_INVALIDATION_EVENTS" envSeparator:","`
+type LocalCacheConfig struct {
+	GroupName string
+	Size      int           `env:"WREDIS_LOCAL_CACHE_SIZE"`
+	Samples   int           `env:"WREDIS_LOCAL_CACHE_SAMPLES"`
+	TTL       time.Duration `env:"WREDIS_LOCAL_CACHE_TTL"`
+	TTLOffset time.Duration `env:"WREDIS_LOCAL_CACHE_TTL"`
+
+	CacheErrors        bool          `env:"WREDIS_LOCAL_CACHE_ERRS"`
+	ErrTTL             time.Duration `env:"WREDIS_LOCAL_CACHE_ERR_TTL"`
+	InvalidationEvents Events        `env:"WREDIS_LOCAL_CACHE_INVALIDATION_EVENTS" envSeparator:","`
 	SubscriptionChannelConfig
 	OnAdd   callback[string, any]
 	OnEvict callback[string, any]
@@ -47,10 +49,10 @@ type CacheConfig struct {
 }
 
 type SubscriptionChannelConfig struct {
-	HealthCheckInterval time.Duration `env:"WREDIS_LRU_SUB_HEALS_INTERVAL"`
-	SendTimeout         time.Duration `env:"WREDIS_LRU_SUB_SEND_TIMEOUT"`
-	Size                int           `env:"WREDIS_LRU_SUB_BUF_SIZE"`
-	Workers             int           `env:"WREDIS_LRU_SUB_WORKERS"`
+	HealthCheckInterval time.Duration `env:"WREDIS_LOCAL_CACHE_SUB_HEALS_INTERVAL"`
+	SendTimeout         time.Duration `env:"WREDIS_LOCAL_CACHE_SUB_SEND_TIMEOUT"`
+	Size                int           `env:"WREDIS_LOCAL_CACHE_SUB_BUF_SIZE"`
+	Workers             int           `env:"WREDIS_LOCAL_CACHE_SUB_WORKERS"`
 }
 
 const (
@@ -64,8 +66,8 @@ const (
 	sendTimeout         = 100 * time.Millisecond
 )
 
-func NewCacheConfig() CacheConfig {
-	return CacheConfig{
+func NewLocalCacheConfig() LocalCacheConfig {
+	return LocalCacheConfig{
 		Size:    defaultSize,
 		Samples: defaultSamples,
 		TTL:     defaultTTL,
@@ -80,70 +82,70 @@ func NewCacheConfig() CacheConfig {
 	}
 }
 
-func (lc *CacheConfig) LoadFromEnv() error {
+func (lc *LocalCacheConfig) LoadFromEnv() error {
 	return env.Parse(lc)
 }
 
-func (lc CacheConfig) WithCacheErrors(needCacheErrors bool, errTTL time.Duration) CacheConfig {
+func (lc LocalCacheConfig) WithCacheErrors(needCacheErrors bool, errTTL time.Duration) LocalCacheConfig {
 	lc.CacheErrors = needCacheErrors
 	lc.ErrTTL = errTTL
 
 	return lc
 }
 
-func (lc CacheConfig) WithSize(size int) CacheConfig {
+func (lc LocalCacheConfig) WithSize(size int) LocalCacheConfig {
 	lc.Size = size
 
 	return lc
 }
 
-func (lc CacheConfig) WithSamples(samples int) CacheConfig {
+func (lc LocalCacheConfig) WithSamples(samples int) LocalCacheConfig {
 	lc.Samples = samples
 
 	return lc
 }
 
-func (lc CacheConfig) WithTTL(ttl time.Duration) CacheConfig {
+func (lc LocalCacheConfig) WithTTL(ttl time.Duration) LocalCacheConfig {
 	lc.TTL = ttl
 
 	return lc
 }
 
-func (lc CacheConfig) WithGroupName(name string) CacheConfig {
+func (lc LocalCacheConfig) WithGroupName(name string) LocalCacheConfig {
 	lc.GroupName = name
 
 	return lc
 }
 
-func (lc CacheConfig) WithOnAdd(onAdd callback[string, any]) CacheConfig {
+func (lc LocalCacheConfig) WithOnAdd(onAdd callback[string, any]) LocalCacheConfig {
 	lc.OnAdd = onAdd
 
 	return lc
 }
 
-func (lc CacheConfig) WitOnEvict(onEvict callback[string, any]) CacheConfig {
+func (lc LocalCacheConfig) WitOnEvict(onEvict callback[string, any]) LocalCacheConfig {
 	lc.OnEvict = onEvict
 
 	return lc
 }
 
-func (lc CacheConfig) WithOnGet(onGet callback[string, any]) CacheConfig {
+func (lc LocalCacheConfig) WithOnGet(onGet callback[string, any]) LocalCacheConfig {
 	lc.OnGet = onGet
 
 	return lc
 }
 
-func (lc CacheConfig) WitLogger(logger logger.Logger) CacheConfig {
+func (lc LocalCacheConfig) WitLogger(logger logger.Logger) LocalCacheConfig {
 	lc.logger = logger
 
 	return lc
 }
 
-func (lc CacheConfig) WithCallbackSubChannelCfg(
+func (lc LocalCacheConfig) WithCallbackSubChannelCfg(
 	size int,
 	sendTimeout time.Duration,
 	healthCheckInterval time.Duration,
-) CacheConfig {
+) LocalCacheConfig {
 	lc.SubscriptionChannelConfig.Size = size
 	lc.SubscriptionChannelConfig.SendTimeout = sendTimeout
 	lc.SubscriptionChannelConfig.HealthCheckInterval = healthCheckInterval
@@ -151,13 +153,13 @@ func (lc CacheConfig) WithCallbackSubChannelCfg(
 	return lc
 }
 
-func (lc CacheConfig) WithInvalidationCallbackEvent(events ...Event) CacheConfig {
+func (lc LocalCacheConfig) WithInvalidationCallbackEvent(events ...Event) LocalCacheConfig {
 	lc.InvalidationEvents = events
 
 	return lc
 }
 
-func NewWithCache(ctx context.Context, client UniversalClient, cache Cache, cfg CacheConfig) *CacheClient {
+func NewWithCache(ctx context.Context, client UniversalClient, cache Cache, cfg LocalCacheConfig) *CacheClient {
 	lc := &CacheClient{
 		cfg:             cfg,
 		logger:          cfg.logger,
