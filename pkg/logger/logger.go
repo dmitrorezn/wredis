@@ -1,8 +1,10 @@
 package logger
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"go.uber.org/zap"
 )
@@ -13,6 +15,67 @@ type Logger interface {
 	Panic(msg string, values ...any)
 	Debug(msg string, values ...any)
 	IErrorLogger
+}
+
+type setupLogger interface {
+	*zap.Logger | *slog.Logger | *struct{}
+}
+
+type DefaultLogger struct {
+	StdLogger
+}
+
+type SetupLogger interface {
+	Logger
+	setUp(al any) error
+}
+
+const (
+	STD  = "std"
+	ZAP  = "zap"
+	SLOG = "SLOG"
+)
+
+var (
+	mu      sync.Mutex
+	loggers = map[string]SetupLogger{}
+	_       = Register(STD, NewStdLogger())
+	_       = Register(ZAP, new(ZapLogger))
+	_       = Register(SLOG, new(SlogLogger))
+)
+
+func GetLogger[L setupLogger](name string, l L) (Logger, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	logger, ok := loggers[name]
+	if !ok {
+		return nil, ErrLoggerNotFound
+	}
+	if sl, ok := logger.(SetupLogger); ok {
+		if err := sl.setUp(l); err != nil {
+			return nil, err
+		}
+	}
+
+	return logger, nil
+}
+
+var ErrLoggerRegistered = errors.New("logger already registered")
+var ErrLoggerNotFound = errors.New("logger not found")
+
+func Register(name string, l SetupLogger) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if _, ok := loggers[name]; ok {
+		return fmt.Errorf("%w name:%s",
+			ErrLoggerRegistered,
+			name,
+		)
+	}
+	loggers[name] = l
+
+	return nil
 }
 
 type IErrorLogger interface {
@@ -59,6 +122,10 @@ var _ Logger = (*StdLogger)(nil)
 
 type StdLogger struct{}
 
+func (s StdLogger) setUp(al any) error {
+	return nil
+}
+
 func (s StdLogger) Info(msg string, values ...any) {
 	fmt.Println(append([]any{"[INFO]", msg}, values...)...)
 }
@@ -83,12 +150,6 @@ type ZapLogger struct {
 	logger *zap.Logger
 }
 
-func NewZapLogger(l *zap.Logger) *ZapLogger {
-	return &ZapLogger{
-		logger: l,
-	}
-}
-
 func anyToZapFieldKeyVal(values ...any) []zap.Field {
 	fields := make([]zap.Field, len(values)/2)
 
@@ -101,23 +162,41 @@ func anyToZapFieldKeyVal(values ...any) []zap.Field {
 	return fields
 }
 
-func (e ZapLogger) Info(msg string, values ...any) {
+func NewZapLogger(l *zap.Logger) *ZapLogger {
+	return &ZapLogger{
+		logger: l,
+	}
+}
+
+var ErrAssertZap = errors.New("assert zap fail")
+
+func (e *ZapLogger) setUp(al any) error {
+	if l, ok := al.(*zap.Logger); ok {
+		e.logger = l
+
+		return nil
+	}
+
+	return ErrAssertZap
+}
+
+func (e *ZapLogger) Info(msg string, values ...any) {
 	e.logger.Info(msg, anyToZapFieldKeyVal(values)...)
 }
 
-func (e ZapLogger) Warn(msg string, values ...any) {
+func (e *ZapLogger) Warn(msg string, values ...any) {
 	e.logger.Warn(msg, anyToZapFieldKeyVal(values)...)
 }
 
-func (e ZapLogger) Error(msg string, values ...any) {
+func (e *ZapLogger) Error(msg string, values ...any) {
 	e.logger.Error(msg, anyToZapFieldKeyVal(values)...)
 }
 
-func (e ZapLogger) Panic(msg string, values ...any) {
+func (e *ZapLogger) Panic(msg string, values ...any) {
 	e.logger.Panic(msg, anyToZapFieldKeyVal(values)...)
 }
 
-func (e ZapLogger) Debug(msg string, values ...any) {
+func (e *ZapLogger) Debug(msg string, values ...any) {
 	e.logger.Debug(msg, anyToZapFieldKeyVal(values)...)
 }
 
@@ -133,23 +212,35 @@ func NewSlogLogger(l *slog.Logger) *SlogLogger {
 	}
 }
 
-func (e SlogLogger) Info(msg string, values ...any) {
+var ErrAssertSlog = errors.New("assert slog fail")
+
+func (e *SlogLogger) setUp(al any) error {
+	if l, ok := al.(*slog.Logger); ok {
+		e.logger = l
+
+		return nil
+	}
+
+	return ErrAssertSlog
+}
+
+func (e *SlogLogger) Info(msg string, values ...any) {
 	e.logger.Info(msg, values...)
 }
 
-func (e SlogLogger) Warn(msg string, values ...any) {
+func (e *SlogLogger) Warn(msg string, values ...any) {
 	e.logger.Warn(msg, values...)
 }
 
-func (e SlogLogger) Error(msg string, values ...any) {
+func (e *SlogLogger) Error(msg string, values ...any) {
 	e.logger.Error(msg, values...)
 }
 
-func (e SlogLogger) Panic(msg string, values ...any) {
+func (e *SlogLogger) Panic(msg string, values ...any) {
 	e.logger.Error(msg, values...)
 	panic(msg)
 }
 
-func (e SlogLogger) Debug(msg string, values ...any) {
+func (e *SlogLogger) Debug(msg string, values ...any) {
 	e.logger.Debug(msg, values...)
 }

@@ -2,6 +2,7 @@ package wredis
 
 import (
 	"context"
+	"errors"
 	"sort"
 )
 
@@ -20,19 +21,19 @@ func NewFactory(cfg FactoryConfig, ds ...decoratorID) *Factory {
 }
 
 type FactoryConfig struct {
-	LRU          LRUConfig
+	CacheConfig  CacheConfig
 	SingleFlight SingleFlightConfigs
 }
 
 func NewBuildConfig() FactoryConfig {
 	return FactoryConfig{
-		LRU:          NewLRUConfig(),
+		CacheConfig:  NewCacheConfig(),
 		SingleFlight: make(SingleFlightConfigs, 0),
 	}
 }
 
-func (bc FactoryConfig) WithLRU(lru LRUConfig) FactoryConfig {
-	bc.LRU = lru
+func (bc FactoryConfig) WithCacheConfig(cacheConfig CacheConfig) FactoryConfig {
+	bc.CacheConfig = cacheConfig
 
 	return bc
 }
@@ -50,29 +51,53 @@ func (f Factory) decorate(
 	cfg FactoryConfig,
 ) UniversalClient {
 	switch id {
-	case LRU:
-		return NewWithLRU(ctx, client, cfg.LRU)
-	case SingleFlight:
-		return NewSingleFlight(client, cfg.SingleFlight...)
+	case LRUDecorator:
+		{
+			cache := NewLRUCache(
+				cfg.CacheConfig.Size, cfg.CacheConfig.OnEvict, cfg.CacheConfig.TTL,
+			)
+
+			return NewWithCache(ctx, client, cache, cfg.CacheConfig)
+		}
+	case LFUDecorator:
+		{
+			cache := NewLFUCache(
+				cfg.CacheConfig.Size, cfg.CacheConfig.Samples, cfg.CacheConfig.OnEvict, cfg.CacheConfig.TTL,
+			)
+
+			return NewWithCache(ctx, client, cache, cfg.CacheConfig)
+		}
+	case SingleFlightDecorator:
+		{
+			return NewSingleFlight(client, cfg.SingleFlight...)
+		}
 	}
 
 	return client
 }
 
+var ErrCacheDecoratorDuplicate = errors.New("cache decorator duplicate")
+
 func (f Factory) Build(
 	ctx context.Context,
 	options IOptions,
 	configurations ...Configuration,
-) (client UniversalClient) {
+) (client UniversalClient, err error) {
+	if !f.decorators.UniqCache() {
+		return nil, ErrCacheDecoratorDuplicate
+	}
+
 	switch opt := (options).(type) {
 	case Options:
 		client = New(opt, configurations...)
 	case ClusterOptions:
 		client = NewCluster(opt, configurations...)
+	case RingOptions:
+		client = NewRing(opt, configurations...)
 	}
 	for _, d := range f.decorators {
 		client = f.decorate(ctx, client, d, f.cfg)
 	}
 
-	return client
+	return client, nil
 }

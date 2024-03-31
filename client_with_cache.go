@@ -7,17 +7,17 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v10"
-	"github.com/dmitrorezn/golang-lru/v2/expirable"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/dmitrorezn/golang-lru/v2/expirable"
 	"github.com/dmitrorezn/wredis/pkg/logger"
 )
 
-type LRUClient struct {
-	cfg LRUConfig
+type CacheClient struct {
+	cfg CacheConfig
 	UniversalClient
 	logger logger.Logger
-	cache  *expirable.LRU[string, any]
+	cache  Cache
 	quit   chan struct{}
 }
 
@@ -31,9 +31,10 @@ func (c callback[K, V]) Call(key K, value V) {
 	c(key, value)
 }
 
-type LRUConfig struct {
+type CacheConfig struct {
 	GroupName          string
 	Size               int           `env:"WREDIS_LRU_SIZE"`
+	Samples            int           `env:"WREDIS_LRU_SAMPLES"`
 	TTL                time.Duration `env:"WREDIS_LRU_TTL"`
 	CacheErrors        bool          `env:"WREDIS_LRU_CACHE_ERRS"`
 	ErrTTL             time.Duration `env:"WREDIS_LRU_ERR_TTL"`
@@ -53,21 +54,23 @@ type SubscriptionChannelConfig struct {
 }
 
 const (
-	defaultLruTTL       = time.Minute
-	defaultLruErrTTL    = 10 * time.Second
-	defaultLruSize      = 1_000
+	defaultTTL          = time.Minute
+	defaultErrTTL       = 20 * time.Second
+	defaultSize         = 1_000
+	defaultSamples      = 1_000
 	subBufSize          = 1_000
 	subWorkers          = 10
 	healthCheckInterval = time.Minute
 	sendTimeout         = 100 * time.Millisecond
 )
 
-func NewLRUConfig() LRUConfig {
-	return LRUConfig{
-		Size:   defaultLruSize,
-		TTL:    defaultLruTTL,
-		ErrTTL: defaultLruErrTTL,
-		logger: logger.NewStdLogger(),
+func NewCacheConfig() CacheConfig {
+	return CacheConfig{
+		Size:    defaultSize,
+		Samples: defaultSamples,
+		TTL:     defaultTTL,
+		ErrTTL:  defaultErrTTL,
+		logger:  logger.NewStdLogger(),
 		SubscriptionChannelConfig: SubscriptionChannelConfig{
 			HealthCheckInterval: healthCheckInterval,
 			Size:                subBufSize,
@@ -77,64 +80,70 @@ func NewLRUConfig() LRUConfig {
 	}
 }
 
-func (lc *LRUConfig) LoadFromEnv() error {
+func (lc *CacheConfig) LoadFromEnv() error {
 	return env.Parse(lc)
 }
 
-func (lc LRUConfig) WithCacheErrors(needCacheErrors bool, errTTL time.Duration) LRUConfig {
+func (lc CacheConfig) WithCacheErrors(needCacheErrors bool, errTTL time.Duration) CacheConfig {
 	lc.CacheErrors = needCacheErrors
 	lc.ErrTTL = errTTL
 
 	return lc
 }
 
-func (lc LRUConfig) WithSize(size int) LRUConfig {
+func (lc CacheConfig) WithSize(size int) CacheConfig {
 	lc.Size = size
 
 	return lc
 }
 
-func (lc LRUConfig) WithTTL(ttl time.Duration) LRUConfig {
+func (lc CacheConfig) WithSamples(samples int) CacheConfig {
+	lc.Samples = samples
+
+	return lc
+}
+
+func (lc CacheConfig) WithTTL(ttl time.Duration) CacheConfig {
 	lc.TTL = ttl
 
 	return lc
 }
 
-func (lc LRUConfig) WithGroupName(name string) LRUConfig {
+func (lc CacheConfig) WithGroupName(name string) CacheConfig {
 	lc.GroupName = name
 
 	return lc
 }
 
-func (lc LRUConfig) WithOnAdd(onAdd callback[string, any]) LRUConfig {
+func (lc CacheConfig) WithOnAdd(onAdd callback[string, any]) CacheConfig {
 	lc.OnAdd = onAdd
 
 	return lc
 }
 
-func (lc LRUConfig) WitOnEvict(onEvict callback[string, any]) LRUConfig {
+func (lc CacheConfig) WitOnEvict(onEvict callback[string, any]) CacheConfig {
 	lc.OnEvict = onEvict
 
 	return lc
 }
 
-func (lc LRUConfig) WithOnGet(onGet callback[string, any]) LRUConfig {
+func (lc CacheConfig) WithOnGet(onGet callback[string, any]) CacheConfig {
 	lc.OnGet = onGet
 
 	return lc
 }
 
-func (lc LRUConfig) WitLogger(logger logger.Logger) LRUConfig {
+func (lc CacheConfig) WitLogger(logger logger.Logger) CacheConfig {
 	lc.logger = logger
 
 	return lc
 }
 
-func (lc LRUConfig) WithCallbackSubChannelCfg(
+func (lc CacheConfig) WithCallbackSubChannelCfg(
 	size int,
 	sendTimeout time.Duration,
 	healthCheckInterval time.Duration,
-) LRUConfig {
+) CacheConfig {
 	lc.SubscriptionChannelConfig.Size = size
 	lc.SubscriptionChannelConfig.SendTimeout = sendTimeout
 	lc.SubscriptionChannelConfig.HealthCheckInterval = healthCheckInterval
@@ -142,18 +151,18 @@ func (lc LRUConfig) WithCallbackSubChannelCfg(
 	return lc
 }
 
-func (lc LRUConfig) WithInvalidationCallbackEvent(events ...Event) LRUConfig {
+func (lc CacheConfig) WithInvalidationCallbackEvent(events ...Event) CacheConfig {
 	lc.InvalidationEvents = events
 
 	return lc
 }
 
-func NewWithLRU(ctx context.Context, client UniversalClient, cfg LRUConfig) *LRUClient {
-	lc := &LRUClient{
+func NewWithCache(ctx context.Context, client UniversalClient, cache Cache, cfg CacheConfig) *CacheClient {
+	lc := &CacheClient{
 		cfg:             cfg,
 		logger:          cfg.logger,
 		UniversalClient: client,
-		cache:           expirable.NewLRU[string, any](cfg.Size, cfg.OnEvict.Call, cfg.TTL),
+		cache:           cache,
 		quit:            make(chan struct{}),
 	}
 
@@ -162,11 +171,11 @@ func NewWithLRU(ctx context.Context, client UniversalClient, cfg LRUConfig) *LRU
 	return lc
 }
 
-func (c *LRUClient) start(ctx context.Context) {
+func (c *CacheClient) start(ctx context.Context) {
 	c.subscribeForCallbacks(ctx)
 }
 
-func (c *LRUClient) subscribeForCallbacks(ctx context.Context) {
+func (c *CacheClient) subscribeForCallbacks(ctx context.Context) {
 	if c.cfg.InvalidationEvents.Empty() {
 		return
 	}
@@ -208,7 +217,7 @@ func (s sub) waitQuit(ctx context.Context, quit chan struct{}) {
 	}
 }
 
-func (c *LRUClient) processMessage(ctx context.Context, subChan <-chan *redis.Message) {
+func (c *CacheClient) processMessage(ctx context.Context, subChan <-chan *redis.Message) {
 loop:
 	for {
 		select {
@@ -222,22 +231,22 @@ loop:
 	}
 }
 
-func (c *LRUClient) del(key string) {
-	c.cache.Remove(key)
+func (c *CacheClient) del(key string) {
+	c.cache.Del(key)
 }
 
-func (c *LRUClient) Get(ctx context.Context, key string) (cmd *redis.StringCmd) {
+func (c *CacheClient) Get(ctx context.Context, key string) (cmd *redis.StringCmd) {
 	cmd, ok := c.getStringCmd(key)
 	if ok {
 		return cmd
 	}
 	cmd = c.UniversalClient.Get(ctx, key)
-	c.add(key, cmd)
+	c.set(key, cmd)
 
 	return cmd
 }
 
-func (c *LRUClient) GetDel(ctx context.Context, key string) *redis.StringCmd {
+func (c *CacheClient) GetDel(ctx context.Context, key string) *redis.StringCmd {
 	cmd, ok := c.getStringCmd(key)
 	if !ok || ok && cmd.Err() != nil {
 		return c.UniversalClient.GetDel(ctx, key)
@@ -250,31 +259,31 @@ func (c *LRUClient) GetDel(ctx context.Context, key string) *redis.StringCmd {
 	return cmd
 }
 
-func (c *LRUClient) HGet(ctx context.Context, key, field string) *redis.StringCmd {
+func (c *CacheClient) HGet(ctx context.Context, key, field string) *redis.StringCmd {
 	cacheKey := fieldsToKey(key, field)
 	cmd, ok := c.getStringCmd(cacheKey)
 	if ok {
 		return cmd
 	}
 	cmd = c.UniversalClient.HGet(ctx, key, field)
-	c.add(cacheKey, cmd)
+	c.set(cacheKey, cmd)
 
 	return cmd
 }
 
-func (c *LRUClient) HMGet(ctx context.Context, key string, field ...string) *redis.SliceCmd {
+func (c *CacheClient) HMGet(ctx context.Context, key string, field ...string) *redis.SliceCmd {
 	cacheKey := key + fieldsToKey(field...)
 	cmd, ok := c.getSliceCmd(cacheKey)
 	if ok {
 		return cmd
 	}
 	cmd = c.UniversalClient.HMGet(ctx, key, field...)
-	c.add(key, cmd)
+	c.set(key, cmd)
 
 	return cmd
 }
 
-func (c *LRUClient) Close() error {
+func (c *CacheClient) Close() error {
 	close(c.quit)
 
 	return c.UniversalClient.Close()
@@ -284,25 +293,23 @@ type IErrCmd interface {
 	Err() error
 }
 
-func (c *LRUClient) add(key string, cmd IErrCmd) {
+func (c *CacheClient) set(key string, cmd IErrCmd) {
 	var ttl = c.cfg.TTL
 	if err := cmd.Err(); err != nil {
 		if !c.cfg.CacheErrors {
-			panic(1)
 			return
 		}
-		if c.cfg.ErrTTL > time.Nanosecond {
+		if c.cfg.ErrTTL > 0 {
 			ttl = c.cfg.ErrTTL
 		}
 	}
-	_ = ttl
-	if c.cache.Add(key, cmd) { // ttl) {
+	if c.cache.Set(key, cmd, ttl) {
 		c.cfg.OnEvict.Call(key, cmd)
 	}
 	c.cfg.OnAdd.Call(key, cmd)
 }
 
-func (c *LRUClient) getStringCmd(key string) (*redis.StringCmd, bool) {
+func (c *CacheClient) getStringCmd(key string) (*redis.StringCmd, bool) {
 	value, ok := c.cache.Get(key)
 	if !ok {
 		return nil, false
@@ -316,14 +323,13 @@ func (c *LRUClient) getStringCmd(key string) (*redis.StringCmd, bool) {
 	return cmd, true
 }
 
-func (c *LRUClient) getSliceCmd(key string) (*redis.SliceCmd, bool) {
+func (c *CacheClient) getSliceCmd(key string) (*redis.SliceCmd, bool) {
 	value, ok := c.cache.Get(key)
 	if !ok {
 		return nil, false
 	}
 	cmd, asserted := value.(*redis.SliceCmd)
 	if !asserted || cmd == nil {
-		panic("getSliceCmd")
 		return nil, false
 	}
 	c.cfg.OnGet.Call(key, value)

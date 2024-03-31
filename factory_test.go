@@ -3,6 +3,7 @@ package wredis
 import (
 	"context"
 	"fmt"
+	"github.com/stretchr/testify/assert"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -38,11 +39,11 @@ func (t *TestClientSuite) SetupTest() {
 	t.addedToLru = new(atomic.Int64)
 
 	var (
-		cfg    = NewBuildConfig()
-		lruCfg = NewLRUConfig().
-			WithTTL(time.Minute).
-			WithCacheErrors(true, 30*time.Second).
-			WithOnAdd(func(key string, _ any) {
+		cfg      = NewBuildConfig()
+		cacheCfg = NewCacheConfig().
+				WithTTL(time.Minute).
+				WithCacheErrors(true, 30*time.Second).
+				WithOnAdd(func(key string, _ any) {
 				t.addedToLru.Add(1)
 			}).
 			WithSize(10_000).
@@ -55,34 +56,60 @@ func (t *TestClientSuite) SetupTest() {
 	)
 
 	t.clients = make(map[string]UniversalClient)
-	t.clients[basicClient] = NewFactory(cfg).Build(ctx, Options{
+	var err error
+	t.clients[basicClient], err = NewFactory(cfg).Build(ctx, Options{
 		Addr: "localhost:6379",
 	})
-	t.clients[lruClient] = NewFactory(
-		cfg.WithLRU(lruCfg),
-		LRU,
+	assert.NoError(t.T(), err)
+	t.clients[lruClient], err = NewFactory(
+		cfg.WithCacheConfig(cacheCfg),
+		LRUDecorator,
 	).Build(ctx, Options{
 		Addr: "localhost:6379",
 	})
-	t.clients[lruSingleFlightClient] = NewFactory(
-		cfg.WithLRU(lruCfg).WithSingleFlight(singleCfg...),
-		LRU, SingleFlight,
+	assert.NoError(t.T(), err)
+
+	t.clients[lfuClient], err = NewFactory(
+		cfg.WithCacheConfig(cacheCfg.WithSamples(100_000)),
+		LFUDecorator,
 	).Build(ctx, Options{
 		Addr: "localhost:6379",
 	})
-	t.clients[singleFlightClient] = NewFactory(
+	assert.NoError(t.T(), err)
+
+	t.clients[lruSingleFlightClient], err = NewFactory(
+		cfg.WithCacheConfig(cacheCfg).WithSingleFlight(singleCfg...),
+		LRUDecorator, SingleFlightDecorator,
+	).Build(ctx, Options{
+		Addr: "localhost:6379",
+	})
+	assert.NoError(t.T(), err)
+
+	t.clients[lfuSingleFlightClient], err = NewFactory(
+		cfg.WithCacheConfig(cacheCfg.WithSamples(100_000)).WithSingleFlight(singleCfg...),
+		LFUDecorator, SingleFlightDecorator,
+	).Build(ctx, Options{
+		Addr: "localhost:6379",
+	})
+	assert.NoError(t.T(), err)
+
+	t.clients[singleFlightClient], err = NewFactory(
 		cfg.WithSingleFlight(singleCfg...),
-		SingleFlight,
+		SingleFlightDecorator,
 	).Build(ctx, Options{
 		Addr: "localhost:6379",
 	})
+	assert.NoError(t.T(), err)
+
 }
 
 const (
 	basicClient           = "basicClient"
 	lruSingleFlightClient = "lruSingleFlightClient"
+	lfuSingleFlightClient = "lfuSingleFlightClient"
 	singleFlightClient    = "singleFlightClient"
 	lruClient             = "lruClient"
+	lfuClient             = "lfuClient"
 )
 
 func (t *TestClientSuite) TestClients() {
@@ -342,32 +369,6 @@ func (t *TestClientSuite) TestClients() {
 	}
 }
 
-type fifo struct {
-	items chan string
-}
-
-func (f *fifo) Push(item string) {
-	select {
-	case f.items <- item:
-	default:
-	}
-}
-
-func (f *fifo) Pop() string {
-	select {
-	case it := <-f.items:
-		return it
-	default:
-		return "default"
-	}
-}
-
-func (f *fifo) RepeatPush(item string, n int) {
-	for i := 0; i < n; i++ {
-		f.items <- item
-	}
-}
-
 const (
 	hmap        = "hmap"
 	maxkeyixd   = 1000
@@ -384,68 +385,140 @@ func (t *TestClientSuite) initBench(ctx context.Context) {
 	}
 }
 
+/*
+goos: darwin
+goarch: arm64
+pkg: github.com/dmitrorezn/wredis
+BenchmarkBasicClient
+BenchmarkBasicClient/Get
+BenchmarkBasicClient/Get-10         	   81182	     15701 ns/op
+BenchmarkBasicClient/HGet
+BenchmarkBasicClient/HGet-10        	   65368	     16395 ns/op
+*/
 func BenchmarkBasicClient(b *testing.B) {
 	t := new(TestClientSuite)
-	t.SetupTest()
+	b.ReportAllocs()
 
-	ctx, cancel := context.WithTimeout(t.ctx, 10*time.Minute)
-	defer cancel()
-
-	t.initBench(ctx)
-
-	tableTest := []struct {
-		op     string
-		client string
-	}{
-		{
-			client: basicClient,
-		},
-		//{
-		//	client: lruClient,
-		//},
-		//{
-		//	client: singleFlightClient,
-		//},
-		//{
-		//	client: lruSingleFlightClient,
-		//},
-	}
-
-	one := sync.Once{}
-	keys := make([]string, maxkeyixdss)
-
-	for _, test := range tableTest {
-		test := test
-		client := t.clients[test.client]
-
-		b.Run(test.op+" "+test.client, func(b *testing.B) {
-			defer func() {
-				fmt.Println("FINISHED", test.op+" "+test.client)
-			}()
-			b.N = maxkeyixdss / 2
-			one.Do(func() {
-				for i := 0; i < maxkeyixdss; i++ {
-					keys[i] = fmt.Sprint(rand.Intn(maxkeyixd))
-				}
-			})
-			for i := b.N; i > 0; i-- {
-				b.StopTimer()
-				key := ""
-				if i < len(keys) {
-					key = test.op + keys[i]
-				} else {
-					key = fmt.Sprint(test.op, rand.Intn(maxkeyixd))
-				}
-				b.StartTimer()
-
-				_, _ = client.Get(t.ctx, key).Result()
-			}
-		})
-	}
+	b.Run("Get", func(b *testing.B) {
+		benchGet(t, basicClient, b)
+	})
+	b.Run("HGet", func(b *testing.B) {
+		benchHGet(t, basicClient, b)
+	})
 }
 
+/*
+goos: darwin
+goarch: arm64
+pkg: github.com/dmitrorezn/wredis
+BenchmarkClientLruClient
+BenchmarkClientLruClient/Get
+BenchmarkClientLruClient/Get-10         	  137955	      7268 ns/op
+BenchmarkClientLruClient/HGet
+BenchmarkClientLruClient/HGet-10        	  134301	      7928 ns/op
+*/
 func BenchmarkClientLruClient(b *testing.B) {
 	t := new(TestClientSuite)
+	b.ReportAllocs()
+
+	b.Run("Get", func(b *testing.B) {
+		benchGet(t, lruClient, b)
+	})
+	b.Run("HGet", func(b *testing.B) {
+		benchHGet(t, lruClient, b)
+	})
+}
+
+/*
+goos: darwin
+goarch: arm64
+pkg: github.com/dmitrorezn/wredis
+BenchmarkClientLfuClient
+BenchmarkClientLfuClient/Get
+BenchmarkClientLfuClient/Get-10         	  389989	      2567 ns/op
+BenchmarkClientLfuClient/HGet
+BenchmarkClientLfuClient/HGet-10        	  815414	      1234 ns/op
+*/
+func BenchmarkClientLfuClient(b *testing.B) {
+	t := new(TestClientSuite)
+	b.ReportAllocs()
+
+	b.Run("Get", func(b *testing.B) {
+		benchGet(t, lfuClient, b)
+	})
+	b.Run("HGet", func(b *testing.B) {
+		benchHGet(t, lfuClient, b)
+	})
+}
+
+/*
+goos: darwin
+goarch: arm64
+pkg: github.com/dmitrorezn/wredis
+BenchmarkSingleFlightClient
+BenchmarkSingleFlightClient/Get
+BenchmarkSingleFlightClient/Get-10         	   56251	     21283 ns/op
+BenchmarkSingleFlightClient/HGet
+BenchmarkSingleFlightClient/HGet-10        	   41181	     26600 ns/op
+*/
+func BenchmarkSingleFlightClient(b *testing.B) {
+	t := new(TestClientSuite)
+	b.ReportAllocs()
+
+	b.Run("Get", func(b *testing.B) {
+		benchGet(t, singleFlightClient, b)
+	})
+	b.Run("HGet", func(b *testing.B) {
+		benchHGet(t, singleFlightClient, b)
+	})
+}
+
+/*
+goos: darwin
+goarch: arm64
+pkg: github.com/dmitrorezn/wredis
+BenchmarkLruSingleFlightClient
+BenchmarkLruSingleFlightClient/Get
+BenchmarkLruSingleFlightClient/Get-10         	  224241	      5576 ns/op
+BenchmarkLruSingleFlightClient/HGet
+BenchmarkLruSingleFlightClient/HGet-10        	  115236	      9987 ns/op
+*/
+func BenchmarkLruSingleFlightClient(b *testing.B) {
+	t := new(TestClientSuite)
+	b.ReportAllocs()
+
+	b.Run("Get", func(b *testing.B) {
+		benchGet(t, lruSingleFlightClient, b)
+	})
+	b.Run("HGet", func(b *testing.B) {
+		benchHGet(t, lruSingleFlightClient, b)
+	})
+}
+
+/*
+goos: darwin
+goarch: arm64
+pkg: github.com/dmitrorezn/wredis
+BenchmarkLfuSingleFlightClient
+BenchmarkLfuSingleFlightClient/Get
+BenchmarkLfuSingleFlightClient/Get-10         	  177110	      9872 ns/op
+BenchmarkLfuSingleFlightClient/HGet
+BenchmarkLfuSingleFlightClient/HGet-10        	  181047	      5816 ns/op
+*/
+func BenchmarkLfuSingleFlightClient(b *testing.B) {
+	t := new(TestClientSuite)
+	b.ReportAllocs()
+
+	b.Run("Get", func(b *testing.B) {
+		benchGet(t, lfuSingleFlightClient, b)
+	})
+	b.Run("HGet", func(b *testing.B) {
+		benchHGet(t, lfuSingleFlightClient, b)
+	})
+}
+
+func benchGet(t *TestClientSuite, clientName string, b *testing.B) {
+	b.Helper()
 	t.SetupTest()
 
 	ctx, cancel := context.WithTimeout(t.ctx, 10*time.Minute)
@@ -453,119 +526,65 @@ func BenchmarkClientLruClient(b *testing.B) {
 
 	t.initBench(ctx)
 
-	tableTest := []struct {
-		op     string
-		client string
-	}{
-		{
-			client: lruClient,
-		},
-	}
+	one := sync.Once{}
+	keys := make([]string, maxkeyixdss)
+	one.Do(func() {
+		for i := 0; i < maxkeyixdss; i++ {
+			keys[i] = fmt.Sprint(rand.Intn(maxkeyixd))
+		}
+	})
+
+	client := t.clients[clientName]
+	b.RunParallel(func(pb *testing.PB) {
+		var i int
+		for pb.Next() {
+			b.StopTimer()
+			key := ""
+			if i < len(keys) {
+				key = keys[i]
+			} else {
+				key = fmt.Sprint(rand.Intn(maxkeyixd))
+			}
+			b.StartTimer()
+
+			_, _ = client.Get(t.ctx, key).Result()
+			i++
+		}
+	})
+}
+
+func benchHGet(t *TestClientSuite, clientName string, b *testing.B) {
+	b.Helper()
+	t.SetupTest()
+
+	ctx, cancel := context.WithTimeout(t.ctx, 10*time.Minute)
+	defer cancel()
+
+	t.initBench(ctx)
 
 	one := sync.Once{}
 	keys := make([]string, maxkeyixdss)
-
-	for _, test := range tableTest {
-		test := test
-		client := t.clients[test.client]
-
-		b.Run(test.op+" "+test.client, func(b *testing.B) {
-			defer func() {
-				fmt.Println("FINISHED", test.op+" "+test.client)
-			}()
-			b.N = maxkeyixdss / 2
-			one.Do(func() {
-				for i := 0; i < maxkeyixdss; i++ {
-					keys[i] = fmt.Sprint(rand.Intn(maxkeyixd))
-				}
-			})
-			for i := b.N; i > 0; i-- {
-				b.StopTimer()
-				key := ""
-				if i < len(keys) {
-					key = test.op + keys[i]
-				} else {
-					key = fmt.Sprint(test.op, rand.Intn(maxkeyixd))
-				}
-				b.StartTimer()
-
-				_, _ = client.Get(t.ctx, key).Result()
-			}
-		})
-	}
-}
-
-func BenchmarkClientHmap(b *testing.B) {
-	t := new(TestClientSuite)
-	t.SetupTest()
-
-	const (
-		hmap      = "hmap"
-		maxkeyixd = 1000
-	)
-
-	ctx, cancel := context.WithTimeout(t.ctx, time.Hour)
-	defer cancel()
-
-	for i := 0; i < maxkeyixd; i++ {
-		if i%2 == 0 {
-			t.clients[basicClient].Set(ctx, fmt.Sprint(i), fmt.Sprint(i), time.Hour)
-			hkey := fmt.Sprint(hmap, i)
-			t.clients[basicClient].HSet(ctx, hkey, hkey, hkey)
+	one.Do(func() {
+		for i := 0; i < maxkeyixdss; i++ {
+			keys[i] = fmt.Sprint(rand.Intn(maxkeyixd))
 		}
-	}
+	})
 
-	tableTest := []struct {
-		op     string
-		client string
-	}{
-		{
-			op:     hmap,
-			client: basicClient,
-		},
-		{
-			op:     hmap,
-			client: lruClient,
-		},
-		{
-			op:     hmap,
-			client: singleFlightClient,
-		},
-		{
-			op:     hmap,
-			client: lruSingleFlightClient,
-		},
-	}
-
-	one := sync.Once{}
-	keys := make([]string, b.N)
-
-	for _, test := range tableTest {
-		test := test
-		client := t.clients[test.client]
-
-		b.Run(test.op+" "+test.client, func(b *testing.B) {
-			one.Do(func() {
-				for i := 0; i < b.N; i++ {
-					keys[i] = fmt.Sprint(rand.Intn(maxkeyixd))
-				}
-			})
-
-			for i := b.N; i > 0; i-- {
-				b.StopTimer()
-				key := ""
-				if i < len(keys) {
-					key = test.op + keys[i]
-				} else {
-					key = fmt.Sprint(test.op, rand.Intn(maxkeyixd))
-				}
-				if i%1000 == 0 {
-					fmt.Println("key", key)
-				}
-				b.StartTimer()
-
-				_, _ = client.HGet(t.ctx, key, key).Result()
+	client := t.clients[clientName]
+	b.RunParallel(func(pb *testing.PB) {
+		var i int
+		for pb.Next() {
+			b.StopTimer()
+			key := ""
+			if i < len(keys) {
+				key = keys[i]
+			} else {
+				key = fmt.Sprint(rand.Intn(maxkeyixd))
 			}
-		})
-	}
+			b.StartTimer()
+
+			_, _ = client.HGet(t.ctx, key, key).Result()
+			i++
+		}
+	})
 }

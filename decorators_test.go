@@ -1,15 +1,25 @@
 package wredis
 
 import (
+	"github.com/stretchr/testify/assert"
 	"sort"
 	"testing"
 )
 
 func TestSort(t *testing.T) {
-	ds := decorators{SingleFlight, LRU}
+	ds := decorators{SingleFlightDecorator, LRUDecorator}
 	sort.Sort(ds)
 
-	if ds[0] != LRU || ds[1] != SingleFlight {
-		t.Error("LRU should be first in decorators list", ds)
+	if ds[0] != LRUDecorator || ds[1] != SingleFlightDecorator {
+		t.Error("LRUDecorator should be first in decorators list", ds)
 	}
+}
+
+func TestUniqCache(t *testing.T) {
+	ds := decorators{SingleFlightDecorator, LRUDecorator}
+
+	assert.True(t, ds.UniqCache())
+	ds = decorators{SingleFlightDecorator, LRUDecorator, LFUDecorator}
+
+	assert.False(t, ds.UniqCache())
 }

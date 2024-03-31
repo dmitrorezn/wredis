@@ -51,3 +51,17 @@ func NewCluster(options ClusterOptions, configurations ...Configuration) *Client
 		UniversalClient: client,
 	}
 }
+
+func NewRing(options RingOptions, configurations ...Configuration) *Client {
+	var (
+		opts   = redis.RingOptions(options)
+		client = redis.NewRing(&opts)
+	)
+	for _, c := range configurations {
+		c(client)
+	}
+
+	return &Client{
+		UniversalClient: client,
+	}
+}

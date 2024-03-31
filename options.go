@@ -21,3 +21,7 @@ func (ClusterOptions) opt() {}
 func (o ClusterOptions) WithAddrs(addrs []string) {
 	o.Addrs = addrs
 }
+
+type RingOptions redis.RingOptions
+
+func (RingOptions) opt() {}
