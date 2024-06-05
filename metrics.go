@@ -259,6 +259,46 @@ func (m Measurement) MarshalBinary() ([]byte, error) {
 type Collector interface {
 	RecordMeasurement(ctx context.Context, m Measurement)
 }
+type MetricCollector struct {
+	counters map[string]metric.Int64Counter
+}
+
+const (
+	call = "calls"
+	miss = "miss"
+)
+
+type name string
+
+func (n name) With(add string)name  {
+	return n+"_"+name(add)
+}
+func (n name) String()string  {
+	return string(n)
+}
+
+func NewMetricCollector(provider metric.MeterProvider) (*MetricCollector, error) {
+	meter := provider.Meter("github.com/dmitrorezn/wredis")
+var prefix name = "redis_client"
+	var err error
+	m := &MetricCollector{
+		counters: make(map[string]metric.Int64Counter),
+	}
+	if m.counters[call], err = meter.Int64Counter(prefix.With(call).String()); err != nil {
+		return nil, err
+	}
+	if m.counters[miss], err = meter.Int64Counter(prefix.With(miss).String()); err != nil {
+		return nil, err
+	}
+
+	return m, nil
+}
+func (mc *MetricCollector) RecordMeasurement(ctx context.Context, m Measurement) {
+	mc.counters[call].Add(ctx, 1)
+	if m.Missed{
+		mc.counters[miss].Add(ctx, 1)
+	}
+}
 
 func newBufColl(c Collector, cfg MetricConfig) *BufferedCollector {
 	return &BufferedCollector{

@@ -8,8 +8,6 @@ import (
 	"github.com/stretchr/testify/suite"
 	"go.opentelemetry.io/otel/sdk/resource"
 
-	 "github.com/prometheus/client_golang/prometheus"
-
 	"go.opentelemetry.io/otel/sdk/metric"
 	"testing"
 )
@@ -29,26 +27,10 @@ func TestMetricsClient(t *testing.T) {
 }
 
 type coll struct {
-
-}
-
-func (c coll) Describe(descs chan<- *prometheus.Desc) {
-	descs <-&prometheus.Desc{
-
-	}
-}
-
-func (c coll) Collect(metrics chan<- prometheus.Metric) {
-	metrics <-prometheus.Metric{
-
-	}
 }
 
 func (t *TestMetricsClientSuite) SetupTest() {
 	t.ctx = context.Background()
-
-	pclient :=prometheus.Register(new(coll))
-	pclient.
 
 	res, err := resource.New(t.ctx, resource.WithSchemaURL("http://localhost:9090"))
 	t.NoError(err)

@@ -15,6 +15,7 @@ const (
 	LFUDecorator
 	SingleFlightDecorator
 	EncodingDecorator
+	NamedDecorator
 )
 
 var caches = map[decoratorID]int{

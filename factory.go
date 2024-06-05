@@ -22,6 +22,7 @@ func NewFactory(cfg FactoryConfig, ds ...decoratorID) *Factory {
 }
 
 type FactoryConfig struct {
+	Name         string
 	CacheConfig  LocalCacheConfig
 	SingleFlight SingleFlightConfigs
 }
@@ -38,7 +39,10 @@ func (bc FactoryConfig) WithCacheConfig(cacheConfig LocalCacheConfig) FactoryCon
 
 	return bc
 }
-
+func (bc FactoryConfig) WithName(name string) FactoryConfig {
+	bc.Name = name
+	return bc
+}
 func (bc FactoryConfig) WithSingleFlight(opts ...Config[SingleFlightClient]) FactoryConfig {
 	bc.SingleFlight = opts
 
@@ -71,6 +75,10 @@ func (f Factory) decorate(
 	case SingleFlightDecorator:
 		{
 			return NewSingleFlight(client, cfg.SingleFlight...)
+		}
+	case NamedDecorator:
+		{
+			return NewNamedClient(client, cfg.Name)
 		}
 	}
 
